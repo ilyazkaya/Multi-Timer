@@ -18,6 +18,8 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -36,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -55,6 +58,8 @@ private const val CHANNEL_ID = "timer_done_channel"
 private const val ACTION_PAUSE = "com.ilya.multitimer.ACTION_PAUSE"
 private const val ACTION_RESET = "com.ilya.multitimer.ACTION_RESET"
 private const val EXTRA_ID = "id"
+private const val EXTRA_LABEL = "label"
+private const val EXTRA_TOTAL = "total"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -67,7 +72,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MultiTimerApp() {
     val scheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
-    MaterialTheme(colorScheme = scheme) { TimerListScreen() }
+    MaterialTheme(colorScheme = scheme) {
+        EnsureNotificationPermission()
+        TimerListScreen()
+    }
 }
 
 data class TimerState(
@@ -81,6 +89,21 @@ data class TimerState(
     val finishedWallClockMs: Long? = null,
     val alerted: Boolean = false
 )
+
+@Composable
+fun EnsureNotificationPermission() {
+    val context = LocalContext.current
+    if (Build.VERSION.SDK_INT >= 33) {
+        val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+        LaunchedEffect(granted) {
+            if (!granted) launcher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+}
 
 @Composable
 fun TimerListScreen() {
@@ -154,8 +177,12 @@ fun TimerListScreen() {
                     val updated = t.copy(finishedWallClockMs = t.finishedWallClockMs ?: nowWall)
                     timers[i] = updated
                     if (justFinished && !updated.alerted && alertJobs[t.id] == null) {
-                        alertJobs[t.id] = scope.launch { continuousAlertForUpToFiveMinutes(context) }
+                        val job = scope.launch { continuousAlertForUpToFiveMinutes(context) }
+                        alertJobs[t.id] = job
                         showTimerDoneNotification(context, updated, elapsed)
+                        job.invokeOnCompletion {
+                            NotificationManagerCompat.from(context).cancel(updated.id.toInt())
+                        }
                         timers[i] = updated.copy(alerted = true)
                     }
                 }
@@ -311,8 +338,10 @@ fun TimerCard(
 ) {
     val zone = remember { ZoneId.systemDefault() }
     val timeFmt = remember { DateTimeFormatter.ofPattern("h:mm:ss a").withZone(zone) }
+
     val elapsed = elapsedMs(timer, nowRealtime)
     val remaining = max(0L, timer.totalMs - elapsed)
+
     val (startedTime, startedOffset) = timer.startedWallClockMs?.let { timeAndOffset(it, zone, timeFmt) } ?: (null to null)
     val (stopTime, stopOffset) = when {
         timer.finishedWallClockMs != null -> timeAndOffset(timer.finishedWallClockMs, zone, timeFmt)
@@ -322,9 +351,11 @@ fun TimerCard(
         }
         else -> (null to null)
     }
+
     val isFinished = timer.finishedWallClockMs != null
     val containerColor = if (isFinished) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.surfaceVariant
     val onContainer = if (isFinished) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = containerColor),
@@ -350,10 +381,12 @@ fun TimerCard(
                     Text("✏ Edit")
                 }
             }
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatPill(label = "Elapsed", value = formatHMS(elapsed), modifier = Modifier.weight(1f))
                 StatPill(label = "Left", value = formatHMS(remaining), modifier = Modifier.weight(1f))
             }
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                 StatPill(
                     label = "Started",
@@ -370,6 +403,7 @@ fun TimerCard(
                     modifier = Modifier.weight(1f)
                 )
             }
+
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -449,6 +483,7 @@ private fun StatPill(
 ) {
     val bg = if (tonal) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
     val fg = if (tonal) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onPrimaryContainer
+
     Surface(
         color = bg,
         contentColor = fg,
@@ -543,6 +578,13 @@ private fun showTimerDoneNotification(context: Context, timer: TimerState, elaps
     val pausePi = PendingIntent.getBroadcast(context, (timer.id * 2 + 1).toInt(), pauseIntent, flags)
     val resetPi = PendingIntent.getBroadcast(context, (timer.id * 2 + 2).toInt(), resetIntent, flags)
 
+    val fullIntent = Intent(context, AlarmActivity::class.java)
+        .putExtra(EXTRA_ID, timer.id)
+        .putExtra(EXTRA_LABEL, timer.label)
+        .putExtra(EXTRA_TOTAL, timer.totalMs)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    val fullPi = PendingIntent.getActivity(context, timer.id.toInt(), fullIntent, flags)
+
     val text = "Total ${formatHMS(timer.totalMs)} • Elapsed ${formatHMS(elapsedMs)}"
 
     if (!canPostNotifications(context)) return
@@ -553,9 +595,14 @@ private fun showTimerDoneNotification(context: Context, timer: TimerState, elaps
         .setContentText(text)
         .setStyle(NotificationCompat.BigTextStyle().bigText(text))
         .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setCategory(NotificationCompat.CATEGORY_ALARM)
+        .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .addAction(android.R.drawable.ic_media_pause, "Pause", pausePi)
         .addAction(android.R.drawable.ic_menu_revert, "Reset", resetPi)
-        .setAutoCancel(true)
+        .setOnlyAlertOnce(true)
+        .setOngoing(true)
+        .setAutoCancel(false)
+        .setFullScreenIntent(fullPi, true)
         .build()
 
     NotificationManagerCompat.from(context).notify(timer.id.toInt(), n)
@@ -649,4 +696,48 @@ private fun canPostNotifications(context: Context): Boolean {
             android.Manifest.permission.POST_NOTIFICATIONS
         ) == PackageManager.PERMISSION_GRANTED
     } else true
+}
+
+class AlarmActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setShowWhenLocked(true)
+        setTurnScreenOn(true)
+        setContent {
+            val scheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
+            MaterialTheme(colorScheme = scheme) {
+                val id = intent.getLongExtra(EXTRA_ID, -1L)
+                val label = intent.getStringExtra(EXTRA_LABEL) ?: "Timer"
+                AlarmScreen(label = label, onPause = {
+                    sendBroadcast(Intent(ACTION_PAUSE).putExtra(EXTRA_ID, id).setPackage(packageName))
+                    finish()
+                }, onReset = {
+                    sendBroadcast(Intent(ACTION_RESET).putExtra(EXTRA_ID, id).setPackage(packageName))
+                    finish()
+                })
+            }
+        }
+    }
+}
+
+@Composable
+fun AlarmScreen(label: String, onPause: () -> Unit, onReset: () -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(label, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(12.dp))
+            Text("Time's up", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(24.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onPause, shape = RoundedCornerShape(28.dp)) { Text("Pause") }
+                OutlinedButton(onClick = onReset, shape = RoundedCornerShape(28.dp)) { Text("Reset") }
+            }
+        }
+    }
 }
