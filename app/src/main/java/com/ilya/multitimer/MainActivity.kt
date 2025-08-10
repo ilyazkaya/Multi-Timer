@@ -294,35 +294,16 @@ fun TimerListScreen() {
                 
                 when (intent.action) {
                     ACTION_PAUSE -> {
-                        val idx = timers.indexOfFirst { it.id == id }
-                        if (idx >= 0) {
-                            val cur = timers[idx]
-                            if (cur.startedRealtimeMs != null && cur.startedWallClockMs != null) {
-                                val nowR = SystemClock.elapsedRealtime()
-                                val nowW = System.currentTimeMillis()
-                                val realtimeElapsed = nowR - cur.startedRealtimeMs
-                                val wallElapsed = nowW - cur.startedWallClockMs
-                                val accrued = min(realtimeElapsed, wallElapsed)
-                                val newAccumulated = cur.accumulatedMs + accrued
-                                
-                                val finalTimer = if (newAccumulated >= cur.totalMs) {
-                                    cur.copy(
-                                        isRunning = false,
-                                        accumulatedMs = cur.totalMs,
-                                        finishedWallClockMs = nowW
-                                    )
-                                } else {
-                                    cur.copy(
-                                        isRunning = false,
-                                        accumulatedMs = newAccumulated
-                                    )
-                                }
-                                
-                                timers[idx] = finalTimer
-                                NotificationManagerCompat.from(ctx).cancel(id.toInt())
-                                TimerStore.cancelForTimer(ctx, id)
-                                TimerStore.save(ctx, timers, idCounter)
+                        val id = intent.getLongExtra(EXTRA_ID, -1L)
+                        if (id != -1L) {
+                            // Reload timer from persistent store to get exact paused state
+                            val (stored, _) = TimerStore.load(ctx)
+                            val idxMem = timers.indexOfFirst { it.id == id }
+                            val idxStore = stored.indexOfFirst { it.id == id }
+                            if (idxMem >= 0 && idxStore >= 0) {
+                                timers[idxMem] = stored[idxStore]
                             }
+                            NotificationManagerCompat.from(ctx).cancel(id.toInt())
                         }
                     }
                     ACTION_RESET -> {
@@ -343,9 +324,8 @@ fun TimerListScreen() {
                         }
                     }
                     ACTION_SILENCE -> {
-                        // Don't stop the timer, just silence the alarm
-                        // The elapsed time should continue counting
-                        // UI state is managed by service; no local change needed here
+                        // No state change here; service already silences sound. Keep timer running.
+                        NotificationManagerCompat.from(ctx).cancel(id.toInt())
                     }
                     ACTION_ALARM_FIRED -> {
                         // No-op here: AlarmReceiver/AlarmService handle notification + sound.

@@ -273,12 +273,16 @@ class AlarmService : Service() {
                 cur.startedWallClockMs != null -> nowW - cur.startedWallClockMs
                 else -> 0L
             }
-            val accrued = (cur.accumulatedMs + runPart).coerceAtMost(cur.totalMs)
+            val accrued = cur.accumulatedMs + runPart
+            // Preserve original finish time if already set; otherwise, set only if we detect finish now
+            val finishedAt = cur.finishedWallClockMs ?: run {
+                if (cur.startedWallClockMs != null && accrued >= cur.totalMs) cur.startedWallClockMs + cur.totalMs else null
+            }
             val next = cur.copy(
                 isRunning = false,
                 startedRealtimeMs = null,
                 accumulatedMs = accrued,
-                finishedWallClockMs = cur.finishedWallClockMs ?: if (accrued >= cur.totalMs) nowW else cur.finishedWallClockMs
+                finishedWallClockMs = finishedAt
             )
             list[idx] = next
             TimerStore.cancelForTimer(this, id)
