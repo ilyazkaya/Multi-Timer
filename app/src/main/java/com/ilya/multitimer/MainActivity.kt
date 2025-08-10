@@ -413,21 +413,13 @@ fun TimerListScreen() {
                                     val wallElapsed = nowW - t.startedWallClockMs
                                     val accrued = min(realtimeElapsed, wallElapsed)
                                     val newAccumulated = t.accumulatedMs + accrued
-                                    
-                                    val finalTimer = if (newAccumulated >= t.totalMs) {
-                                        // Timer finished while pausing
-                                        t.copy(
-                                            isRunning = false,
-                                            accumulatedMs = t.totalMs,
-                                            finishedWallClockMs = nowW
-                                        )
-                                    } else {
-                                        t.copy(
-                                            isRunning = false,
-                                            accumulatedMs = newAccumulated
-                                        )
-                                    }
-                                    finalTimer
+                                    val finishedAt = t.finishedWallClockMs
+                                        ?: if (newAccumulated >= t.totalMs) t.startedWallClockMs + t.totalMs else null
+                                    t.copy(
+                                        isRunning = false,
+                                        accumulatedMs = newAccumulated,
+                                        finishedWallClockMs = finishedAt
+                                    )
                                 } else {
                                     // Fallback if timestamps are null
                                     t.copy(isRunning = false)
